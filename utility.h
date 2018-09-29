@@ -27,5 +27,5 @@ void StripLeadingWhitespace(char *str);
 void StripQuotes(char *Str);
 const char *GetTok(const char *In, char Delim, char **Token);
 void Destroy(void *Item);
-
+char *replace_char(char *str, char find, char replace);
 #endif

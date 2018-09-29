@@ -2,7 +2,7 @@ CC=gcc
 VERSION=0.0.1
 CFLAGS=-g -O2 -fPIC -fno-stack-protector 
 LIBS=
-INSTALL=/bin/install -c
+INSTALL=/usr/bin/install -c
 prefix=/
 exec_prefix=${prefix}
 bindir=${exec_prefix}/bin
@@ -22,7 +22,7 @@ pam_csession.so: common.h utility.o pam_module.c
 utility.o: utility.h utility.c
 	gcc $(FLAGS) -c utility.c
 
-install: pam_csession.so 
+install: pam_csession.so
 	$(INSTALL) -d $(DESTDIR)$(bindir)
 	$(INSTALL) -d $(DESTDIR)$(libdir)/security
 	$(INSTALL) -d $(DESTDIR)$(mandir)/man8
