@@ -71,7 +71,8 @@ int CGroupSetup(TSettings *Settings)
     else if(errno == ENOENT){
         result=mkdir(Settings->CSessionsDir, 0700);
         if(result){
-            syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to create directory %s", Settings->CSessionsDir);
+            syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to create directory %s (%s)", Settings->CSessionsDir,strerror(errno));
+            Destroy(Path);
             return 1;
         }
         else{
@@ -79,7 +80,8 @@ int CGroupSetup(TSettings *Settings)
         }
     }
     else{
-        syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to open dir %s", Settings->CSessionsDir);
+        syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to open dir %s (%s)", Settings->CSessionsDir,strerror(errno));
+        Destroy(Path);
         return 2;
     }
 
@@ -95,7 +97,9 @@ int CGroupSetup(TSettings *Settings)
     snprintf(SessionDir, 1024, "%ssession-%d/", Settings->CSessionsDir, pid);
     result=mkdir(SessionDir, 0700);
     if(result){
-        syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to create session directory %s", SessionDir);
+        syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to create session directory %s (%s)", SessionDir, strerror(errno));
+        Destroy(SessionDir);
+        Destroy(Path);
         return 3;
     }
     else{
@@ -115,11 +119,11 @@ int CGroupSetup(TSettings *Settings)
     //nice can be zero, it's not a limit, but rather a hint of processor
     //usage with '0' meaning 'normal sharing' so we can just allow
     //any value to be set here
-    //if (Settings->nice > 0)
+    if (Settings->nice > 0)
     {
         Path=MCopyStr(Path, SessionDir, "cpu.weight.nice",NULL);
         Tempstr=(char *) realloc(Tempstr, 1024);
-        snprintf(Tempstr, 1024, "%d\n", nice);
+        snprintf(Tempstr, 1024, "%d\n", Settings->nice);
         if( WriteToFile(Path, Tempstr) != TRUE){
             syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to write (%s) to %s", Tempstr, Path);
         }
@@ -152,9 +156,9 @@ int CGroupSetup(TSettings *Settings)
     {
         Path=MCopyStr(Path, SessionDir, "memory.max",NULL);
         Tempstr=(char *) realloc(Tempstr, 1024);
+        snprintf(Tempstr, 1024, "%g\n", Settings->mem_max);
         ptr=strrchr(Tempstr, '.');
         if (ptr) *ptr='\0';
-        snprintf(Tempstr, 1024, "%g\n", Settings->mem_max);
         if( WriteToFile(Path, Tempstr) != TRUE){
             syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to write (%s) to %s", Tempstr, Path);
         }
@@ -164,10 +168,10 @@ int CGroupSetup(TSettings *Settings)
     {
         Path=MCopyStr(Path, SessionDir, "memory.swap.max",NULL);
         Tempstr=(char *) realloc(Tempstr, 1024);
-        ptr=strrchr(Tempstr, '.');
-        if (ptr) *ptr='\0';
         if (Settings->swap_max < 0) Tempstr=CopyStr(Tempstr,"0");
         else snprintf(Tempstr, 1024, "%g\n", Settings->swap_max);
+        ptr=strrchr(Tempstr, '.');
+        if (ptr) *ptr='\0';
         if( WriteToFile(Path, Tempstr) != TRUE){
             syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to write (%s) to %s", Tempstr, Path);
         }
@@ -295,13 +299,14 @@ int csession_setup(pam_handle_t *pamh, int flags, int argc, const char **argv)
         else if (strncmp(ptr,"proc.mem=",9)==0)   Settings.proc_mem=FromSIUnit(ptr+9, 1024);
     }
 
-	Settings.CGroupControllers=replace_char(Settings.CGroupControllers,',',' ');
+    Settings.CGroupControllers=replace_char(Settings.CGroupControllers,',',' ');
     Settings.CSessionsDir=CopyStr(Settings.CSessionsDir, Settings.CGroupDir);
     Settings.CSessionsDir=CatStr(Settings.CSessionsDir, "/csessions/");
 
     if (ItemListMatches(p_user, Settings.Users)){
         if(CGroupSetup(&Settings) != 0)
             ret=1;
+
     }
 
     Destroy(Settings.CGroupDir);
@@ -310,37 +315,57 @@ int csession_setup(pam_handle_t *pamh, int flags, int argc, const char **argv)
 }
 
 
-void csession_cleanup(int argc, const char *argv[])
+void csession_cleanup(pam_handle_t *pamh, int argc, const char *argv[])
 {
     const char *ptr;
     char *CGroupDir=NULL, *Path=NULL, *Tempstr=NULL;
     char *CSessionsDir=NULL;
+    char *Users=NULL;
+    const char *p_user;
     pid_t pid;
     int i;
 
+    pam_get_user(pamh, &p_user, NULL);
     CGroupDir=CopyStr(CGroupDir, DEFAULT_CGROUP_DIR);
 
     for (i=0; i < argc; i++)
     {
         ptr=argv[i];
         if (strncmp(ptr,"cgroupfs=",9)==0) CGroupDir=CopyStr(CGroupDir, ptr+9);
-    }
-    CSessionsDir=CopyStr(CSessionsDir, CGroupDir);
-    CSessionsDir=CatStr(CSessionsDir, "/csessions/");
-
-    pid=getpid();
-    Path=MCopyStr(Path, CGroupDir, "/cgroup.procs", NULL);
-    Tempstr=(char *) realloc(Tempstr, 1024);
-    snprintf(Tempstr, 1024, "%d", pid);
-    if( WriteToFile(Path, Tempstr) != TRUE){
-        syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to write (%s) to %s", Tempstr, Path);
+        else if (strncmp(ptr,"user=",5)==0)  Users=CopyStr(Users, ptr+5);
+        else if (strncmp(ptr,"users=",6)==0) Users=CopyStr(Users, ptr+6);
     }
 
-    Path=(char *) realloc(Path, 1024);
-    snprintf(Path, 1024, "%s/session-%d/", CSessionsDir, pid);
-    if(rmdir(Path) != 0)
-        syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to remove session directory %s", Path);
+    if (ItemListMatches(p_user, Users)){
 
+        CSessionsDir=CopyStr(CSessionsDir, CGroupDir);
+        CSessionsDir=CatStr(CSessionsDir, "/csessions/");
+
+        pid=getpid(); // why not 0?
+        Path=MCopyStr(Path, CGroupDir, "/cgroup.procs", NULL);
+        Tempstr=(char *) realloc(Tempstr, 1024);
+        snprintf(Tempstr, 1024, "%d", pid);
+        if( WriteToFile(Path, Tempstr) != TRUE){
+            syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to write (%s) to %s", Tempstr, Path);
+        }
+        //
+        // maybe try to kill all processes in the session?
+        Path=MCopyStr(Path, CSessionsDir, "/cgroup.procs", NULL);
+        killAllInSession(Path);
+        Path=(char *) realloc(Path, 1024);
+        snprintf(Path, 1024, "%s/session-%d/", CSessionsDir, pid);
+
+        for(i=0; i <= 3; i++){
+            if(rmdir(Path) != 0)
+                syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: failed to remove session directory %s (%s) try: %d", Path, strerror(errno), i);
+            else
+                break;
+            sleep(1);
+        }
+    }
+
+    Destroy(Users);
+    Destroy(CSessionsDir);
     Destroy(CGroupDir);
     Destroy(Tempstr);
     Destroy(Path);
@@ -368,7 +393,7 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, cons
 //like recording the logout occured, or clearing up temporary files
 PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
-    csession_cleanup(argc, argv);
+    csession_cleanup(pamh, argc, argv);
     return(PAM_IGNORE);
 }
 

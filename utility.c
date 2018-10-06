@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <syslog.h>
 #include <errno.h>
+#include <sys/types.h>
+#include <signal.h>
 
 int WriteToFile(const char *Path, const char *Str)
 {
@@ -175,7 +177,7 @@ char *VCatStr(char *Dest, const char *Str1,  va_list args)
     for (sptr=Str1; sptr !=NULL; sptr=va_arg(args,const char *))
     {
         len+=StrLen(sptr)+1;
-        len=len*2;
+        len=len*2; // ?
 
 
         ptr=(char *) realloc(ptr,len);
@@ -326,3 +328,29 @@ char* replace_char(char* str, char find, char replace){
     }
     return str;
 }
+
+int killAllInSession(char *procs){
+    FILE * fp;
+    char * line = NULL;
+    size_t len = 0;
+    ssize_t read;
+    pid_t pid;
+
+    fp = fopen(procs, "r");
+    if (fp == NULL)
+        syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: open failed for %s (%s)", procs, strerror(errno));
+        return 1;
+    while ((read = getline(&line, &len, fp)) != -1) {
+        pid=atoi(line);
+        syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: killing: %d", pid);
+        if( kill(pid,9) != 0)
+            syslog(LOG_AUTHPRIV|LOG_INFO, "pam_csession: could not kill pid %d (%s)", pid, strerror(errno));
+
+    }
+
+    fclose(fp);
+    if (line)
+        free(line);
+    return 0;
+}
+
